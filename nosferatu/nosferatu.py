@@ -2,6 +2,8 @@
 import copy
 import psycopg2
 
+from .query_builder import QueryBuilder
+
 
 class Nosferatu(object):
     """Nosfertau"""
@@ -16,78 +18,23 @@ class Nosferatu(object):
         return Database(c.cursor())
 
 
-class QueryBuilder(object):
-    """Query is a builder for SQL query statements"""
-
-    def __init__(self):
-        self._fields = []
-        self._table_name = None
-        self._wheres = []
-        self._order_by = None
-        self._limit = None
-        self._offset = None
-
-    def select(self, fields):
-        raise NotImplementedError
-
-    def set_table_name(self, table_name):
-        self._table_name = table_name
-
-    def where(self, stmt):
-        self._wheres.append(stmt)
-
-    def order_by(self, stmt):
-        self._order_by = "ORDER BY %s" % stmt
-
-    def limit(self, num):
-        self._limit = "LIMIT %d" % num
-
-    def offset(self, num):
-        self._offset = "OFFSET %d" % num
-
-    def build(self):
-        q = "SELECT "
-
-        if len(self._fields) > 0:
-            q += ','.join(self._fields)
-        else:
-            q += '*'
-
-        q += " FROM %s" % self._table_name
-
-        if len(self._wheres) > 0:
-            q += " WHERE"
-            for stmt in self._wheres:
-                q += " %s" % stmt
-
-        if self._order_by is not None:
-            q += " %s" % self._order_by
-
-        if self._limit is not None:
-            q += " %s" % self._limit
-
-        if self._offset is not None:
-            q += " %s" % self._offset
-
-        return q
-
-
 class Column(object):
-    """Column represents a column in a table defention"""
+    """Column represents a column in a table definition"""
 
     def __init__(self, name):
         self.name = name
 
 
 class Table(object):
-    """Table represents a table defenition in a schema"""
+    """Table represents a table definition in a schema"""
 
-    def __init__(self, name, cursor):
+    def __init__(self, cursor, name, schema_name):
         self.name = name
+        self.schema_name = schema_name
         self.cursor = cursor
         self.columns = []
         self._query_builder = QueryBuilder()
-        self._query_builder.set_table_name(name)
+        self._query_builder.set_table_name(schema_name, name)
         # TOFIX: Lazy load columns lookup
         self.lookup_columns()
 
@@ -100,20 +47,22 @@ class Table(object):
             SELECT column_name
             FROM information_schema.columns
             WHERE table_name = '%s'
-        """ % (self.name)
+        """ % self.name
         self.cursor.execute(sql)
         rows = self.cursor.fetchall()
         for row in rows:
             col = Column(row[0])
-            self.columns.append(col.name)
+            self.columns.append(col)
 
-    def inspect(self):
-        for col in self.columns:
-            print col
+    def list_columns(self):
+        return map(lambda x: x.name, self.columns)
 
     def all(self):
         """all executes the query and return result"""
-        raise NotImplementedError
+        q = self._query_builder.build()
+        self._query_builder.clear()
+        self.cursor.execute(q)
+        return self.cursor.fetchall()
 
     def one(self):
         """all executes the query and return only one result"""
@@ -135,17 +84,20 @@ class Database(object):
         self.cursor = cursor
         self.tables = []
         self.lookup_tables()
+        self.schemas = []
 
     def lookup_tables(self):
         """lookup tables in the given database and push them to __dict__"""
-        sql = "SELECT table_name FROM information_schema.tables"
+        sql = "SELECT table_name, table_schema FROM information_schema.tables"
         self.cursor.execute(sql)
         rows = self.cursor.fetchall()
         for row in rows:
             if row[0] == 'tables':
                 continue
-            self.tables.append(row[0])
-            self.__setattr__(row[0], Table(row[0], self.cursor))
+            # self.schemas.append(row[1])
+            t = Table(self.cursor, row[0], row[1])
+            self.tables.append(t)
+            self.__setattr__(row[0], t)
 
     def __getatrr__(self, name):
         if name in self.__dict__:
